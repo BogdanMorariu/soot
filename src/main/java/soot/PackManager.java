@@ -74,6 +74,8 @@ import soot.jimple.spark.fieldrw.FieldTagger;
 import soot.jimple.toolkits.annotation.AvailExprTagger;
 import soot.jimple.toolkits.annotation.DominatorsTagger;
 import soot.jimple.toolkits.annotation.LineNumberAdder;
+import soot.jimple.toolkits.annotation.aaamyPack.TaintedAnalyser;
+import soot.jimple.toolkits.annotation.aaamyPack.TaintedAnnotator;
 import soot.jimple.toolkits.annotation.arraycheck.ArrayBoundsChecker;
 import soot.jimple.toolkits.annotation.arraycheck.RectangularArrayFinder;
 import soot.jimple.toolkits.annotation.callgraph.CallGraphGrapher;
@@ -275,6 +277,10 @@ public class PackManager {
 
     // Jimple transformation pack
     addPack(p = new BodyPack("jtp"));
+    {
+      p.add(new Transform("jtp.propagator", TaintedAnnotator.v()));
+      //p.add(new Transform("jtp.analyser", TaintedAnalyser.v()));
+    }
 
     // Jimple optimization pack
     addPack(p = new BodyPack("jop"));
