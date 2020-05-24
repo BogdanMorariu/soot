@@ -74,8 +74,7 @@ import soot.jimple.spark.fieldrw.FieldTagger;
 import soot.jimple.toolkits.annotation.AvailExprTagger;
 import soot.jimple.toolkits.annotation.DominatorsTagger;
 import soot.jimple.toolkits.annotation.LineNumberAdder;
-import soot.jimple.toolkits.annotation.aaamyPack.TaintedAnalyser;
-import soot.jimple.toolkits.annotation.aaamyPack.TaintedAnnotator;
+import soot.jimple.toolkits.annotation.aaamyPack.TaintedAnalysisTransformer;
 import soot.jimple.toolkits.annotation.arraycheck.ArrayBoundsChecker;
 import soot.jimple.toolkits.annotation.arraycheck.RectangularArrayFinder;
 import soot.jimple.toolkits.annotation.callgraph.CallGraphGrapher;
@@ -278,8 +277,7 @@ public class PackManager {
     // Jimple transformation pack
     addPack(p = new BodyPack("jtp"));
     {
-      p.add(new Transform("jtp.propagator", TaintedAnnotator.v()));
-      //p.add(new Transform("jtp.analyser", TaintedAnalyser.v()));
+      p.add(new Transform("jtp.tainted", TaintedAnalysisTransformer.v()));
     }
 
     // Jimple optimization pack
@@ -527,7 +525,10 @@ public class PackManager {
         logger.debug("Running in interactive mode.");
       }
     }
+    long start = System.currentTimeMillis();
     runBodyPacks();
+    long finish = System.currentTimeMillis() - start;
+    System.out.println("Running all body packs took " + finish/1000 + "s"+ finish%1000 + "ms");
     handleInnerClasses();
   }
 
@@ -614,7 +615,10 @@ public class PackManager {
       getPack("wsop").apply();
     } else {
       getPack("wjpp").apply();
+      long start = System.currentTimeMillis();
       getPack("cg").apply();
+      long finish = System.currentTimeMillis() - start;
+      System.out.println("Creating the callgraph took " + finish/1000 + "s"+ finish%1000 + "ms");
       getPack("wjtp").apply();
       getPack("wjop").apply();
       getPack("wjap").apply();
