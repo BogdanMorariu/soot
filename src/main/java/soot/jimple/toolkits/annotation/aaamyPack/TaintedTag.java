@@ -7,6 +7,8 @@ import java.util.Arrays;
 
 public class TaintedTag implements Tag {
 
+    public static final String NAME = "pf.bm.TaintedTag";
+
     private int[] sensitiveParamsIndexes;
 
     private int[] compromisedParamIndexes;
@@ -28,7 +30,7 @@ public class TaintedTag implements Tag {
     }
 
     public String getName() {
-        return "pf.bm.TaintedTag";
+        return NAME;
     }
 
     public int[] getSensitiveParamsIndexes() {

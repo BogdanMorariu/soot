@@ -28,21 +28,17 @@ public class TaintedAnalysisTransformer extends BodyTransformer {
 
         List<Local> parameterLocals = getParameterLocals(sootMethod);
         int[] sensitiveParamIndexes = determineSensitiveParamIndexes(parameterLocals);
-        sootMethod.removeTag("pf.bm.TaintedTag");
+        sootMethod.removeTag(TaintedTag.NAME);
         sootMethod.addTag(new TaintedTag(sensitiveParamIndexes));
 
-        analyseSootMethod(sootMethod);
+        analyseNode(sootMethod);
 
         reportUnsafeParameters(sootMethod, parameterLocals);
     }
 
-    private String extractMethodName(SootMethod sootMethod) {
-        return sootMethod.getDeclaringClass() + "." + sootMethod.getName();
-    }
-
     private void reportUnsafeParameters(SootMethod sootMethod, List<Local> parameterLocals) {
         String methodFullName = extractMethodName(sootMethod);
-        TaintedTag taintedTag = (TaintedTag) sootMethod.getTag("pf.bm.TaintedTag");
+        TaintedTag taintedTag = (TaintedTag) sootMethod.getTag(TaintedTag.NAME);
         int[] sensitiveParamIndexes = taintedTag.getSensitiveParamsIndexes();
         int[] compromisedIndexes = taintedTag.getCompromisedParamIndexes();
 
@@ -53,111 +49,64 @@ public class TaintedAnalysisTransformer extends BodyTransformer {
         }
     }
 
-    private int[] determineSensitiveParamIndexes(List<Local> parameterLocals) {
-        if (parameterLocals.size() == 0)
-            return new int[0];
-        int[] indexes = new int[parameterLocals.size()];
-        Arrays.fill(indexes, 1);
-        return indexes;
-    }
-
-    private void analyseSootMethod(SootMethod sootMethod) {
+    private void analyseNode(SootMethod sootMethod) {
         CallGraph callGraph = Scene.v().getCallGraph();
 
-        List<Local> parameterLocals = getParameterLocals(sootMethod);
+        Iterator<Edge> edges = callGraph.edgesOutOf(sootMethod);
+        StreamSupport.stream(Spliterators.spliteratorUnknownSize(edges, Spliterator.ORDERED), false)
+                .forEach(this::analyzeEdge);
+    }
 
-        if (sootMethod.getName().equals("<init>")) {
+    private void analyzeEdge(Edge e) {
+        SootMethod parentMethod = e.getSrc().method();
+        List<Local> parameterLocals = getParameterLocals(parentMethod);
+        Unit unit = e.srcUnit();
+        if (!(unit instanceof InvokeStmt)) {
             return;
         }
+        SootMethod currentMethod = extractMethod(unit);
+        List<Value> currentArguments = extractArguments(unit);
 
-        Iterator<Edge> edges = callGraph.edgesOutOf(sootMethod);
-        StreamSupport
-                .stream(Spliterators.spliteratorUnknownSize(edges, Spliterator.ORDERED), false)
-                .forEach(e -> searchForCompromisedIndexes(parameterLocals, e, sootMethod));
-    }
+        String fullMethodName = extractMethodName(currentMethod);
 
-    private TaintedTag storeAnalysisResultOnTag(SootMethod sootMethod, int[] compromisedIndexes) {
-        TaintedTag taintedTag = getOrCreateTaintedTag(sootMethod, compromisedIndexes.length);
-
-        taintedTag.setVisited(true);
-        taintedTag.updateCompromisedParamIndexes(compromisedIndexes);
-        return taintedTag;
-    }
-
-    private TaintedTag getOrCreateTaintedTag(SootMethod sootMethod, int paramLocalSize) {
-        TaintedTag taintedTag = (TaintedTag) sootMethod.getTag("pf.bm.TaintedTag");
-
-        if (taintedTag == null) {
-            taintedTag = new TaintedTag(new int[paramLocalSize]);
-            sootMethod.addTag(taintedTag);
-        }
-        return taintedTag;
-    }
-
-    private void searchForCompromisedIndexes(List<Local> parameterLocals, Edge e, SootMethod parentMethod) {
-        Unit unit = e.srcUnit();
-        if (unit instanceof InvokeStmt) {
-            InvokeExpr expr = ((InvokeStmt) unit).getInvokeExpr();
-            SootMethod currentMethod = expr.getMethod();
-            List<Value> args = expr.getArgs();
-            int[] compromisedIndexes = new int[parameterLocals.size()];
-
-            String fullMethodName = extractMethodName(currentMethod);
-
-            if (dangerousMethods.contains(fullMethodName)) {
-                for (Value arg : args) {
-                    int index = findIndex(parameterLocals, arg);
-
-                    if (index != -1) {
-                        compromisedIndexes[index] = 1;
-                    }
-                }
-                storeAnalysisResultOnTag(currentMethod, compromisedIndexes);
-                updateParentTag(parameterLocals, args, parentMethod, compromisedIndexes);
-
-                //System.out.println("Found dangerous method: " + currentMethod.getName() + " with " + taintedTag.toString());
-            } else {
-                analyzeInvokedMethods(parameterLocals, currentMethod, args, parentMethod);
-            }
+        if (dangerousMethods.contains(fullMethodName)) {
+            int[] compromisedParameterLocals = mapCompromisedArgumentsToParameterLocals(parameterLocals, currentArguments);
+            storeAnalysisResultOnTag(parentMethod, compromisedParameterLocals);
+        } else {
+            analyzeInvokedMethod(parameterLocals, currentMethod, currentArguments, parentMethod);
         }
     }
 
-    private void analyzeInvokedMethods(List<Local> parameterLocals, SootMethod invokedMethod, List<Value> args, SootMethod parentMethod) {
-        boolean nextMethodUsesParams = args.stream().anyMatch(arg -> parameterLocals.stream().anyMatch(param -> param.getName().equals(arg.toString())));
-        int[] compromisedIndexes = new int[args.size()];
+    private void analyzeInvokedMethod(List<Local> parameterLocals, SootMethod invokedMethod, List<Value> args, SootMethod parentMethod) {
+        boolean invokedMethodUsesParams = argListContainsParams(parameterLocals, args);
 
-        if (nextMethodUsesParams) {
+        if (invokedMethodUsesParams) {
             TaintedTag taintedTag = getOrCreateTaintedTag(invokedMethod, args.size());
-            //System.out.println("T1 dangerous method: " + invokedMethod.getName() + " with " + taintedTag.toString());
             if (!taintedTag.isVisited()) {
-                //System.out.println("VISITING " + invokedMethod.getName());
-                analyseSootMethod(invokedMethod);
-                storeAnalysisResultOnTag(invokedMethod, compromisedIndexes);
+                analyseNode(invokedMethod);
+                markTagAsVisited(invokedMethod, new int[args.size()]);
             }
-
-            //System.out.println("T2 dangerous method: " + invokedMethod.getName() + " with " + taintedTag.toString());
 
             taintedTag = getOrCreateTaintedTag(invokedMethod, args.size());
             int[] compromisedArguments = taintedTag.getCompromisedParamIndexes();
-            //System.out.println("Cargs of method " + invokedMethod.getName() +": " + Arrays.toString(compromisedArguments));
-
             updateParentTag(parameterLocals, args, parentMethod, compromisedArguments);
         }
     }
 
-    private void updateParentTag(List<Local> parameterLocals, List<Value> args, SootMethod parentMethod, int[] compromisedArguments) {
-        int[] parentCompromisedIndexes = new int[parameterLocals.size()];
-        for (int i = 0; i < compromisedArguments.length; i++) {
-            if (compromisedArguments[i] == 1) {
-                Value argument = args.get(i);
+    private boolean argListContainsParams(List<Local> parameterLocals, List<Value> args) {
+        return args.stream().anyMatch(arg -> parameterLocals.stream().anyMatch(param -> param.getName().equals(arg.toString())));
+    }
 
-                int paramIndex = findIndex(parameterLocals, argument);
-                if (paramIndex != -1)
-                    parentCompromisedIndexes[paramIndex] = 1;
+    private int[] mapCompromisedArgumentsToParameterLocals(List<Local> parameterLocals, List<Value> currentArguments) {
+        int[] compromisedParameterLocals = new int[parameterLocals.size()];
+        for (Value arg : currentArguments) {
+            int index = findIndex(parameterLocals, arg);
+
+            if (index != -1) {
+                compromisedParameterLocals[index] = 1;
             }
         }
-
-        storeAnalysisResultOnTag(parentMethod, parentCompromisedIndexes);
+        return compromisedParameterLocals;
     }
 
     private List<Local> getParameterLocals(SootMethod sootMethod) {
@@ -184,6 +133,58 @@ public class TaintedAnalysisTransformer extends BodyTransformer {
         return retVal;
     }
 
+    private TaintedTag storeAnalysisResultOnTag(SootMethod sootMethod, int[] compromisedIndexes) {
+        TaintedTag taintedTag = getOrCreateTaintedTag(sootMethod, compromisedIndexes.length);
+
+        taintedTag.setVisited(true);
+        taintedTag.updateCompromisedParamIndexes(compromisedIndexes);
+        return taintedTag;
+    }
+
+    private TaintedTag markTagAsVisited(SootMethod sootMethod, int[] compromisedIndexes) {
+        TaintedTag taintedTag = getOrCreateTaintedTag(sootMethod, compromisedIndexes.length);
+
+        taintedTag.setVisited(true);
+        return taintedTag;
+    }
+
+    private TaintedTag getOrCreateTaintedTag(SootMethod sootMethod, int paramLocalSize) {
+        TaintedTag taintedTag = (TaintedTag) sootMethod.getTag(TaintedTag.NAME);
+
+        if (taintedTag == null) {
+            taintedTag = new TaintedTag(new int[paramLocalSize]);
+            sootMethod.addTag(taintedTag);
+        }
+        return taintedTag;
+    }
+
+    private int[] determineSensitiveParamIndexes(List<Local> parameterLocals) {
+        if (parameterLocals.size() == 0)
+            return new int[0];
+        int[] indexes = new int[parameterLocals.size()];
+        Arrays.fill(indexes, 1);
+        return indexes;
+    }
+
+    private void updateParentTag(List<Local> parameterLocals, List<Value> args, SootMethod parentMethod, int[] compromisedArguments) {
+        int[] parentCompromisedIndexes = new int[parameterLocals.size()];
+        for (int i = 0; i < compromisedArguments.length; i++) {
+            if (compromisedArguments[i] == 1) {
+                Value argument = args.get(i);
+
+                int paramIndex = findIndex(parameterLocals, argument);
+                if (paramIndex != -1)
+                    parentCompromisedIndexes[paramIndex] = 1;
+            }
+        }
+
+        storeAnalysisResultOnTag(parentMethod, parentCompromisedIndexes);
+    }
+
+    private String extractMethodName(SootMethod sootMethod) {
+        return sootMethod.getDeclaringClass() + "." + sootMethod.getName();
+    }
+
     private int findIndex(List<Local> paramLocals, Value argument) {
         for (int i = 0; i < paramLocals.size(); i++) {
             if (paramLocals.get(i).getName().equals(argument.toString())) {
@@ -191,6 +192,14 @@ public class TaintedAnalysisTransformer extends BodyTransformer {
             }
         }
         return -1;
+    }
+
+    private SootMethod extractMethod(Unit unit) {
+        return ((InvokeStmt) unit).getInvokeExpr().getMethod();
+    }
+
+    private List<Value> extractArguments(Unit unit) {
+        return ((InvokeStmt) unit).getInvokeExpr().getArgs();
     }
 
     @Deprecated
@@ -222,7 +231,7 @@ public class TaintedAnalysisTransformer extends BodyTransformer {
 
     @Deprecated
     private void taintedAnalyse(SootMethod sootMethod) {
-        TaintedTag taintedTag = (TaintedTag) sootMethod.getTag("pf.bm.TaintedTag");
+        TaintedTag taintedTag = (TaintedTag) sootMethod.getTag(TaintedTag.NAME);
         //int[] indexes = taintedTag.getSensitiveParamsIndexes();
         Body activeBody;
         try {
@@ -241,7 +250,7 @@ public class TaintedAnalysisTransformer extends BodyTransformer {
 //                AssignStmt assignStmt = (AssignStmt) curUnit;
 //                List<ValueBox> useBoxes = assignStmt.getUseBoxes();
 //                useBoxes.forEach(box -> {
-//                    Tag tag = box.getTag("pf.bm.TaintedTag");
+//                    Tag tag = box.getTag(TaintedTag.NAME);
 //                    if (tag != null) {
 //                        assignStmt.getDefBoxes().get(0).addTag(tag);
 //                    }
